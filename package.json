@@ -5,17 +5,37 @@
   "type": "module",
   "license": "MIT",
   "homepage": "https://hirecrew.fun",
-  "repository": { "type": "git", "url": "https://github.com/hirecrewfun/hirecrew.git" },
-  "keywords": ["ai-agents", "gta6", "computer-vision", "game-ai", "claude", "playwright"],
-  "engines": { "node": ">=20" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hirecrewfun/hirecrew.git"
+  },
+  "keywords": [
+    "ai-agents",
+    "gta6",
+    "computer-vision",
+    "game-ai",
+    "claude",
+    "playwright"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "start": "node engine/server.mjs",
     "eval": "node evals/reflex-eval.mjs 3",
-    "postinstall": "playwright install chromium"
+    "postinstall": "playwright install chromium",
+    "test": "node --test test/*.test.mjs",
+    "launch": "node scripts/launch.mjs"
   },
   "dependencies": {
     "express": "^5.3.0",
     "jpeg-js": "^0.4.4",
-    "playwright": "^1.48.0"
+    "playwright": "^1.48.0",
+    "@solana/web3.js": "^1.98.4",
+    "@solana/spl-token": "^0.4.14",
+    "@pump-fun/pump-sdk": "^4.3.1",
+    "bn.js": "^5.2.2",
+    "bs58": "^6.0.0",
+    "dotenv": "^16.6.1"
   }
 }

@@ -110,6 +110,16 @@ select:focus,input:focus{border-color:#fff}
 .total .p small{font-size:14px;color:var(--mute);letter-spacing:0;margin-left:6px}
 .note{font-size:13px;color:var(--mute);margin-top:14px}
 .ok{color:#fff}
+.paybox{margin-top:18px;border:1px solid var(--line2);border-radius:16px;padding:18px;display:grid;gap:12px}
+.paybox .amt{font-size:22px;letter-spacing:-.02em}
+.paybox .amt small{font-size:13px;color:var(--mute);margin-left:6px;letter-spacing:0}
+.paybox .row2{display:flex;gap:10px;flex-wrap:wrap}
+.paybox .mono{font:400 12px var(--mono);color:var(--dim);word-break:break-all}
+.wallets{margin-top:28px;border-top:1px solid var(--line2)}
+.wallets div{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--line);font-size:14px}
+.wallets span{color:var(--mute)}
+.wallets a{font:400 12px var(--mono);color:var(--ink);text-decoration:none;word-break:break-all;text-align:right}
+.wallets a:hover{color:var(--accent)}
 .feed{list-style:none;margin:0;padding:0;max-height:560px;overflow:auto;mask-image:linear-gradient(180deg,#000 85%,transparent)}
 .feed li{display:grid;grid-template-columns:64px 1fr;gap:14px;padding:13px 0;border-top:1px solid var(--line);font-size:15px}
 .feed li .t{color:var(--dim);font:400 12px var(--mono);padding-top:3px}
@@ -193,7 +203,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
   <div class="wrap hire">
     <div class="reveal">
       <h2>Give them a job.</h2>
-      <p class="sub" style="margin-bottom:34px">Pick an agent, pick a run, watch it happen. Free while we test. At launch, jobs are paid in $CREW.</p>
+      <p class="sub" style="margin-bottom:34px" id="hireSub">Pick an agent, pick a run, watch it happen. Free while we test. At launch, jobs are paid in $CREW.</p>
       <form id="hireForm" autocomplete="off">
         <div class="field"><label class="l">Agent</label><div class="seg" id="segAgent"></div></div>
         <div class="field"><label class="l">Job</label><div class="seg" id="segKind"></div></div>
@@ -201,6 +211,7 @@ footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
         <div class="field"><label class="l">Your name on the job</label><input type="text" id="by" maxlength="24" placeholder="@you"></div>
         <div class="total"><div class="p" id="price">100<small>credits</small></div><button class="btn primary" type="submit" id="go">Send the job</button></div>
         <p class="note" id="hireMsg">Test credits only. Nothing is charged.</p>
+        <div class="paybox" id="paybox" hidden></div>
       </form>
     </div>
     <div class="reveal">
@@ -245,9 +256,10 @@ footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
       </div>
       <ul class="list">
         <li><b>Creator fees</b><span>Run the rigs and the models. Whatever is left buys $CREW back and burns it.</span></li>
-        <li><b>Holders</b><span>Hire first. Queue priority goes to wallets holding $CREW.</span></li>
-        <li><b>Proof</b><span>Every job has a clip and a referee result, posted with its payout.</span></li>
+        <li><b>Hirers</b><span>Pay in $CREW. A failed job refunds every token to the wallet that paid.</span></li>
+        <li><b>Proof</b><span>Every job has a referee result, and every payout and burn has its own transaction.</span></li>
       </ul>
+      <div class="wallets" id="wallets"></div>
     </div>
   </div>
 </section>
@@ -261,7 +273,10 @@ footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
 <script>
 const $ = (s, r = document) => r.querySelector(s)
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
-let STATE = null, sel = { agent: 'mako', kind: 'run', stops: [] }
+let STATE = null, MONEY = null, sel = { agent: 'mako', kind: 'run', stops: [] }
+const PAID = () => !!MONEY?.open
+const short = (a) => a ? a.slice(0, 4) + '…' + a.slice(-4) : ''
+const solscan = (a, tx) => `https://solscan.io/${tx ? 'tx' : 'account'}/${a}`
 
 const RELEASE = Date.parse('2026-11-19T05:00:00Z')
 function tickCount() {
@@ -296,7 +311,7 @@ function paint(agents) {
     else $('.say', el).textContent = a.job ? 'Reading the job.' : 'Waiting for a job.'
     $('.job', el).textContent = a.job ? `${a.job.title} · @${a.job.by}` : (a.queue ? `${a.queue} queued` : 'none')
     $('.done', el).textContent = a.stats?.done ?? 0
-    $('.earned', el).textContent = (a.stats?.earned ?? 0).toLocaleString() + ' cr'
+    $('.earned', el).textContent = MONEY?.mint ? (Number(MONEY.escrow.perAgent[a.id] || 0).toLocaleString(undefined, { maximumFractionDigits: 0 }) + ' $CREW') : (a.stats?.earned ?? 0).toLocaleString() + ' cr'
     const p = a.pad || { lx: 0, rt: 0, lt: 0 }
     $('.stick i', el).style.transform = `translateX(${p.lx * 11}px)`
     $('.trig.r i', el).style.height = (p.rt * 100) + '%'
@@ -325,7 +340,7 @@ function buildForm() {
   }
   const sk = $('#segKind'); sk.innerHTML = ''
   for (const [k, v] of Object.entries(STATE.kinds)) {
-    const b = document.createElement('button'); b.type = 'button'; b.innerHTML = `${v.label}<small>${v.price}</small>`; b.setAttribute('aria-pressed', k === sel.kind)
+    const b = document.createElement('button'); b.type = 'button'; b.innerHTML = `${v.label}<small>${PAID() ? '$' + MONEY.prices[k] : v.price}</small>`; b.setAttribute('aria-pressed', k === sel.kind)
     b.onclick = () => { sel.kind = k; buildForm() }; sk.appendChild(b)
   }
   const k = STATE.kinds[sel.kind], st = $('#stops'); st.innerHTML = ''
@@ -336,7 +351,58 @@ function buildForm() {
     s.onchange = () => { sel.stops[i] = s.value }
     st.appendChild(s)
   }
-  $('#price').innerHTML = `${k.price}<small>credits</small>`
+  $('#price').innerHTML = PAID() ? `$${MONEY.prices[sel.kind]}<small>in $CREW</small>` : `${k.price}<small>credits</small>`
+}
+function paintMoney() {
+  if (!MONEY) return
+  if (PAID()) {
+    $('#hireSub').textContent = 'Pick an agent, pick a run, pay in $CREW, watch it happen. If the job fails you get every token back.'
+    if ($('#paybox').hidden) $('#hireMsg').textContent = '70% goes to the agent\'s wallet, 30% is burned. Priced in dollars, paid in $CREW at the live price.'
+    $('#go').textContent = 'Pay and send'
+  }
+  const w = [['Engine and treasury', MONEY.engine], ...Object.entries(MONEY.agents).map(([id, a]) => [`${STATE?.agents.find((x) => x.id === id)?.name || id}'s wallet`, a])]
+  if (MONEY.mint) w.unshift(['$CREW', MONEY.mint])
+  const e = MONEY.escrow
+  $('#wallets').innerHTML = w.map(([k, a]) => `<div><span>${esc(k)}</span><a href="${solscan(a)}" target="_blank" rel="noopener" title="${esc(a)}">${short(a)}</a></div>`).join('') +
+    (MONEY.mint ? `<div><span>Paid jobs</span><b>${e.paidJobs}</b></div><div><span>Paid to agents</span><b>${Number(e.toAgents).toLocaleString()} $CREW</b></div><div><span>Burned from jobs</span><b>${Number(e.burned).toLocaleString()} $CREW</b></div>` +
+      e.recent.slice(0, 5).map((r) => `<div><span>${r.kind === 'settle' ? esc(r.agent) + ' paid ' + Number(r.amount).toLocaleString() + ', burned ' + Number(r.burn).toLocaleString() : 'refund ' + Number(r.amount).toLocaleString()}</span><a href="${solscan(r.sig, 1)}" target="_blank" rel="noopener">${short(r.sig)}</a></div>`).join('') : '')
+}
+let web3p = null
+const web3 = () => (web3p ||= new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://unpkg.com/@solana/web3.js@1.98.4/lib/index.iife.min.js'; s.onload = () => ok(window.solanaWeb3); s.onerror = no; document.head.appendChild(s) }))
+const wallet = () => window.phantom?.solana || window.solflare || window.backpack?.solana || window.solana
+let watching = null
+function showPay(o) {
+  const box = $('#paybox'); box.hidden = false
+  const name = STATE.agents.find((a) => a.id === o.job.agent)?.name || o.job.agent
+  box.innerHTML = `<div class="amt">${Number(o.amount).toLocaleString()}<small>$CREW · $${o.usd} for ${esc(name)}</small></div>
+    <div class="row2"><button class="btn primary" type="button" id="payW">Pay with wallet</button><a class="btn" href="${esc(o.url)}">Open in wallet app</a></div>
+    <p class="note" id="payMsg" style="margin:0">Price held for 15 minutes. The job starts as soon as the payment lands.</p>
+    <div class="mono">Order ${esc(o.id)} · pays ${esc(o.payTo)}</div>`
+  $('#payW').onclick = async () => {
+    const w = wallet()
+    if (!w) { $('#payMsg').textContent = 'No Solana wallet found in this browser. Use "Open in wallet app" or install Phantom.'; return }
+    try {
+      $('#payMsg').textContent = 'Connecting…'
+      const { publicKey } = await w.connect()
+      const r = await fetch(`/api/orders/${o.id}/tx`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ account: publicKey.toString() }) })
+      const j = await r.json(); if (!r.ok) throw new Error(j.error)
+      const W = await web3()
+      const tx = W.Transaction.from(Uint8Array.from(atob(j.transaction), (c) => c.charCodeAt(0)))
+      $('#payMsg').textContent = 'Confirm in your wallet…'
+      await w.signAndSendTransaction(tx)
+      $('#payMsg').textContent = 'Sent. Waiting for it to land…'
+    } catch (e) { $('#payMsg').textContent = e?.message || 'Payment cancelled.' }
+  }
+  clearInterval(watching)
+  watching = setInterval(async () => {
+    const r = await fetch('/api/orders/' + o.id).then((x) => x.json()).catch(() => null)
+    if (!r) return
+    if (r.status === 'paid' || r.status === 'done' || r.status === 'refund') {
+      clearInterval(watching)
+      box.innerHTML = `<div class="amt">Paid.<small>${esc(name)} has your job${r.jobId ? ' ' + esc(r.jobId) : ''}</small></div><p class="note" style="margin:0">Watch it above. If the job fails, your $CREW comes back to the same wallet.</p>`
+      $('#ag-' + o.job.agent)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    } else if (Date.now() > r.expiresAt + 120e3) { clearInterval(watching); $('#payMsg') && ($('#payMsg').textContent = 'This price expired. Send the job again for a fresh one.') }
+  }, 3000)
 }
 $('#hireForm').onsubmit = async (ev) => {
   ev.preventDefault()
@@ -345,6 +411,7 @@ $('#hireForm').onsubmit = async (ev) => {
     const r = await fetch('/api/jobs', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ agent: sel.agent, kind: sel.kind, stops: sel.stops.filter(Boolean), by: $('#by').value.replace('@', '') || 'anon' }) })
     const j = await r.json()
     const name = STATE.agents.find((a) => a.id === sel.agent).name
+    if (r.ok && j.pay) { $('#hireMsg').textContent = `Pay to send ${name} the job.`; showPay(j.pay); setTimeout(() => (go.disabled = false), 1500); return }
     $('#hireMsg').innerHTML = r.ok ? `<span class="ok">${esc(name)} has it.</span> ${j.ahead ? j.ahead + ' ahead of you.' : 'Starting now.'} Watch above.` : esc(j.error || 'Try again.')
     if (r.ok) $('#ag-' + sel.agent)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
   } catch { $('#hireMsg').textContent = 'Network hiccup. Try again.' }
@@ -352,8 +419,9 @@ $('#hireForm').onsubmit = async (ev) => {
 }
 
 async function boot() {
-  STATE = await (await fetch('/api/state')).json()
-  paint(STATE.agents); buildForm()
+  ;[STATE, MONEY] = await Promise.all([fetch('/api/state').then((r) => r.json()), fetch('/api/money').then((r) => r.json()).catch(() => null)])
+  paint(STATE.agents); buildForm(); paintMoney()
+  setInterval(async () => { MONEY = await fetch('/api/money').then((r) => r.json()).catch(() => MONEY); paintMoney() }, 30000)
   for (const e of STATE.log.slice(-40)) pushFeed(e)
   const es = new EventSource('/api/stream')
   es.onmessage = (m) => {

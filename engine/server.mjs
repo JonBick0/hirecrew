@@ -1,5 +1,7 @@
 // crew engine: agents, rigs, job queue, live video, referee ledger.
-// Preview mode only: jobs cost paper credits, no wallet, no chain, no money.
+// Hires are paid in $CREW through the escrow (engine/money) once CREW_MINT is set and PAYMENTS_ENABLED=1;
+// until then they are free test credits. House jobs are always free.
+import './env.mjs'
 import express from 'express'
 import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -8,6 +10,7 @@ import { BrowserRig } from './rig.mjs'
 import { Reflex, decode } from './reflex.mjs'
 import { think } from './brain.mjs'
 import { KINDS, PLACES, makeJob, randomJob } from './jobs.mjs'
+import { setupMoney } from './money/index.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.PORT || 3170)
@@ -61,7 +64,8 @@ async function startNext(A) {
   if (!j) return
   j.status = 'running'; j.startedAt = Date.now(); A.job = j; A.history = []; A.crashes = 0; A.say = ''
   A.intent = { mode: j.kind === 'escape' ? 'flee' : 'drive', maxSpeed: 0.85 }
-  await A.rig.startJob({ id: j.id, kind: j.kind, title: j.title, stops: j.stops, limit: j.limit })
+  try { await A.rig.startJob({ id: j.id, kind: j.kind, title: j.title, stops: j.stops, limit: j.limit }) }
+  catch (e) { j.status = 'queued'; delete j.startedAt; A.job = null; save(); throw e }   // back in line, agent free
   log(A.id, 'job', `took job ${j.id} from @${j.by}: ${j.title}`, { job: j.id })
   A.lastThink = 0
   save()
@@ -81,7 +85,24 @@ async function brainTick(A) {
   } finally { A.thinking = false }
 }
 
+// a job the referee never closes (page crash, reload) fails on the server clock, so a paid job always ends
+function endJob(A, ok, secs, why) {
+  const j = A.job, st = S.stats[A.id]
+  if (j.orderId) escrow?.result(j.orderId, ok, ok ? null : why)   // ledger first, then state
+  j.status = ok ? 'done' : 'failed'; j.secs = secs; j.why = why; j.endedAt = Date.now()
+  if (ok) { st.done++; st.earned += j.price } else st.failed++
+  st.secs += secs
+  log(A.id, 'result', ok ? `job ${j.id} complete in ${secs}s` : `job ${j.id} failed (${why})`, { job: j.id, ok })
+  A.job = null; A.intent = { mode: 'stop', maxSpeed: 0.5 }; A.say = ''
+  save()
+}
+function watchdog(A) {
+  const j = A.job
+  if (j && Date.now() - j.startedAt > (j.limit + 60) * 1000) endJob(A, false, Math.round((Date.now() - j.startedAt) / 1000), 'timeout')
+}
+
 async function refereeTick(A) {
+  watchdog(A)
   const r = await A.rig.referee()
   if (!r) return
   for (const e of r.events) {
@@ -90,15 +111,7 @@ async function refereeTick(A) {
     if (e.type === 'ped_hit') log(A.id, 'ref', 'clipped a pedestrian, wanted level up')
     if (e.type === 'lost_cops') log(A.id, 'ref', 'lost the police')
     if (e.type === 'busted') log(A.id, 'ref', 'busted')
-    if (e.type === 'job_end' && A.job && e.id === A.job.id) {
-      const j = A.job, st = S.stats[A.id]
-      j.status = e.ok ? 'done' : 'failed'; j.secs = e.secs; j.why = e.why; j.endedAt = Date.now()
-      if (e.ok) { st.done++; st.earned += j.price } else st.failed++
-      st.secs += e.secs
-      log(A.id, 'result', e.ok ? `job ${j.id} complete in ${e.secs}s` : `job ${j.id} failed (${e.why})`, { job: j.id, ok: e.ok })
-      A.job = null; A.intent = { mode: 'stop', maxSpeed: 0.5 }; A.say = ''
-      save()
-    }
+    if (e.type === 'job_end' && A.job && e.id === A.job.id) endJob(A, e.ok, e.secs, e.why)
   }
 }
 
@@ -113,14 +126,14 @@ function controlLoop(A) {
     A.seen = seen; A.act = A.job ? act : 'idle'; A.pad = pad
     await A.rig.setPad(pad)
   }, 100)
-  setInterval(() => refereeTick(A).catch((e) => console.error('referee', e.message)), 500)
+  setInterval(() => refereeTick(A).catch((e) => { watchdog(A); console.error('referee', e.message) }), 500)
   setInterval(() => { brainTick(A).catch((e) => console.error('brain', e.message)) }, 500)
   setInterval(() => {
-    if (A.job) return
+    if (A.job || A.starting || !A.rig.page || !A.rig.frame) return   // only hand out jobs to a rig that is up
     if (!nextJob(A.id) && HOUSE_JOBS && Date.now() - lastViewer < 120000 && Date.now() - (A.idleSince ||= Date.now()) > 4000) {
       S.jobs.push(randomJob(A.id, ++S.n)); save()
     }
-    if (nextJob(A.id)) { A.idleSince = 0; startNext(A).catch((e) => console.error('start', e.message)) }
+    if (nextJob(A.id)) { A.idleSince = 0; A.starting = true; startNext(A).catch((e) => console.error('start', e.message)).finally(() => { A.starting = false }) }
   }, 1000)
 }
 
@@ -138,16 +151,33 @@ const publicAgent = (A) => ({
 })
 app.get('/api/state', (req, res) => {
   res.json({
-    mode: 'preview', agents: Object.values(live).map(publicAgent), kinds: KINDS, places: PLACES,
+    mode: escrow?.open() ? 'live' : 'preview', agents: Object.values(live).map(publicAgent), kinds: KINDS, places: PLACES,
     jobs: S.jobs.slice(-40).reverse(), log: S.log.slice(-80),
   })
 })
-app.post('/api/jobs', (req, res) => {
+const ipOf = (q) => (q.headers['x-forwarded-for'] || '').split(',').pop().trim() || q.socket.remoteAddress
+const hits = new Map()
+const limited = (key, n, ms) => {
+  const now = Date.now(), recent = (hits.get(key) || []).filter((t) => now - t < ms)
+  if (recent.length >= n) return true
+  recent.push(now); hits.set(key, recent); if (hits.size > 50000) hits.clear()
+  return false
+}
+app.post('/api/jobs', async (req, res) => {
   const { agent, kind, stops, by } = req.body || {}
   if (!live[agent]) return res.status(400).json({ error: 'unknown agent' })
   if (!KINDS[kind]) return res.status(400).json({ error: 'unknown job' })
-  const queued = S.jobs.filter((j) => j.agent === agent && j.status === 'queued')
-  if (queued.length >= 6) return res.status(429).json({ error: 'queue full, try the other agent' })
+  const queued = S.jobs.filter((j) => j.agent === agent && j.status === 'queued' && j.by !== 'house')
+  if (queued.length + (escrow?.openFor(agent) || 0) >= 6) return res.status(429).json({ error: 'queue full, try the other agent' })
+  if (escrow?.open()) {
+    // paid hire: the job is queued only when the $CREW payment lands (escrow.onPaid)
+    if (limited('hire:' + ipOf(req), 20, 3600e3)) return res.status(429).json({ error: 'too many hires, try later' })
+    try {
+      const spec = makeJob({ kind, stops, by, agent }, 0)
+      const order = await escrow.create({ agent, kind, stops: spec.stops, by: spec.by })
+      return res.json({ ok: true, pay: order })
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+  }
   // drop pending house jobs so a hirer goes first
   S.jobs = S.jobs.filter((j) => !(j.agent === agent && j.status === 'queued' && j.by === 'house'))
   const j = makeJob({ kind, stops, by, agent }, ++S.n)
@@ -192,12 +222,32 @@ app.get('/live/:id.jpg', (req, res) => {
 })
 app.get('/health', (req, res) => res.json({ ok: true, agents: Object.values(live).map((A) => ({ id: A.id, frameAge: Date.now() - A.rig.frameAt })) }))
 
+function queuePaid(o) {
+  if (S.jobs.some((j) => j.orderId === o.id)) return
+  S.jobs = S.jobs.filter((j) => !(j.agent === o.job.agent && j.status === 'queued' && j.by === 'house'))
+  const j = { ...makeJob(o.job, ++S.n), orderId: o.id, paid: true, usd: o.usd }
+  S.jobs.push(j); if (S.jobs.length > 500) S.jobs.splice(0, S.jobs.length - 500)
+  o.jobId = j.id
+  log(o.job.agent, 'hire', `@${j.by} paid ${live[o.job.agent].name} for: ${j.title}`, { job: j.id })
+  save()
+}
+const escrow = setupMoney(app, { agentIds: AGENTS.map((a) => a.id), onPaid: queuePaid })
+if (escrow) {
+  // boot reconcile: a paid order whose job is not waiting in the queue (voided by the restart, or lost before the
+  // state file was written) is refunded. Exactly once: result() is a no-op for orders that already have one.
+  for (const o of escrow.unresolved()) {
+    const j = S.jobs.find((x) => x.orderId === o.id)
+    if (j && j.status === 'queued') { o.jobId = j.id; continue }
+    escrow.result(o.id, false, j ? 'void: server restarted mid-job' : 'void: job lost on restart')
+  }
+}
+
 process.on('unhandledRejection', (e) => console.error('unhandledRejection', e))
 process.on('uncaughtException', (e) => console.error('uncaughtException', e))
 
 // timers before anything long-lived (boot-order rule)
 app.listen(PORT, '127.0.0.1', async () => {
-  console.log(`crew engine on :${PORT} (preview, paper credits, house jobs ${HOUSE_JOBS ? 'on' : 'off'})`)
+  console.log(`crew engine on :${PORT} (${escrow?.open() ? 'paid hires in $CREW' : 'free test hires'}, house jobs ${HOUSE_JOBS ? 'on' : 'off'})`)
   for (const A of Object.values(live)) {
     controlLoop(A)
     A.rig.start().then(() => console.log(`rig ${A.id} up`)).catch((e) => console.error(`rig ${A.id} failed`, e))
