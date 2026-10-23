@@ -28,7 +28,7 @@ export function readFrame(img) {
   const { x: mx, y: my } = HUD.minimap
   // trace the GPS line outward from the car ring by ring, staying on the same
   // branch, and aim at the point ~LOOK px out (a few car lengths ahead)
-  const cops = [], roads = []
+  const cops = [], roads = [], path = []
   let route = null, prev = null, aim = null
   for (let r = 8; r <= 64; r += 4) {
     const hits = []
@@ -51,6 +51,7 @@ export function readFrame(img) {
     const pick = prev === null ? centers.reduce((a, b) => (d(a, 0) < d(b, 0) ? a : b)) : centers.reduce((a, b) => (d(a, prev) < d(b, prev) ? a : b))
     if (prev !== null && d(pick, prev) > 1.4) continue   // jumped to another branch
     prev = pick
+    path.push({ angle: pick, radius: r })
     if (r >= LOOK && aim === null) aim = { angle: pick, radius: r }
   }
   if (prev !== null) route = aim || { angle: prev, radius: 0 }
@@ -58,10 +59,32 @@ export function readFrame(img) {
   const { x: bx, y: by, w: bw } = HUD.speedBar
   for (let x = bx; x < bx + bw; x++) { const [R, G, B] = px(x, by); if (R > 200 && G > 200 && B > 200) bar++ }
   const copAngle = cops.length ? Math.atan2(cops.reduce((s, t) => s + Math.sin(t), 0), cops.reduce((s, t) => s + Math.cos(t), 0)) : null
-  return { route, speed: bar / bw, cops: cops.length, copAngle, roads }
+  return { route, path, speed: bar / bw, cops: cops.length, copAngle, roads }
 }
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v))
+
+// Where on the GPS line to aim. A fixed far point cuts every corner straight through the
+// corner building (the route bends, the far point lands diagonally across the block), so the
+// lookahead shrinks at low speed and whenever the line bends before it.
+const LOOK_MIN = 12, LOOK_MAX = 32, BEND = 0.6
+export function followAngle(seen) {
+  const path = seen.path?.length ? seen.path : (seen.route ? [seen.route] : [])
+  if (!path.length) return null
+  const look = LOOK_MIN + (LOOK_MAX - LOOK_MIN) * clamp(seen.speed, 0, 1)
+  let pick = path[0]
+  for (const p of path) {
+    if (Math.abs(p.angle - path[0].angle) > BEND) break   // the line turns here: don't aim past the turn
+    pick = p
+    if (p.radius >= look) break
+  }
+  return pick.angle
+}
+// the line turns within the next ~3 car lengths: brake into the corner
+export function cornerAhead(seen) {
+  const path = seen.path || []
+  return path.some((p) => p.radius <= 36 && Math.abs(p.angle) > 0.7)
+}
 
 export class Reflex {
   constructor() { this.slowFor = 0; this.reverseUntil = 0; this.lastSteer = 0 }
@@ -87,7 +110,7 @@ export class Reflex {
         if (s > score) { score = s; best = t }
       }
       steerTo = best
-    } else if (seen.route) steerTo = seen.route.angle
+    } else if (seen.route) steerTo = followAngle(seen)
     else if (intent.mode === 'flee' || intent.mode === 'wander') steerTo = seen.roads.length ? seen.roads.reduce((a, b) => Math.abs(a) < Math.abs(b) ? a : b) : 0
 
     if (steerTo === null) { pad.lt = seen.speed > 0.05 ? 0.6 : 0; return { pad, seen, act: 'no route' } }
@@ -95,7 +118,7 @@ export class Reflex {
     const turn = clamp(steerTo / (Math.PI / 3), -1, 1)
     pad.lx = turn
     const sharp = Math.abs(steerTo) > 1.2
-    const want = (sharp ? 0.32 : Math.abs(turn) > 0.5 ? 0.55 : 1) * max
+    const want = (sharp ? 0.32 : Math.abs(turn) > 0.5 ? 0.55 : cornerAhead(seen) ? 0.4 : 1) * max
     if (seen.speed < want) pad.rt = 1
     else if (seen.speed > want + 0.15) pad.lt = 0.7
     if (Math.abs(steerTo) > 2.4) { pad.rt = 0.5; pad.lx = Math.sign(steerTo) }   // route is behind us: hard turn

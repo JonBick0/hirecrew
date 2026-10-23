@@ -10,17 +10,15 @@
 // HUD ("mission passed", cash, stars) from the same frames.
 import { chromium } from 'playwright'
 
-let browser = null
-async function getBrowser() {
-  if (!browser) browser = await chromium.launch({ args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
-  return browser
-}
+// one browser per rig: the 3D city renders in software GL, and pages sharing a browser share
+// its GPU process, which halves each rig's frame rate
+const launch = () => chromium.launch({ args: ['--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows'] })
 
 export class BrowserRig {
   constructor(id, url) { this.id = id; this.url = url; this.frame = null; this.frameAt = 0; this.listeners = new Set(); this.seenEvents = 0 }
 
   async start() {
-    const b = await getBrowser()
+    const b = this.browser ||= await launch()
     this.page = await b.newPage({ viewport: { width: 960, height: 540 } })
     this.page.on('pageerror', (e) => console.error(`[rig ${this.id}] page error`, e.message))
     await this.page.goto(this.url)
@@ -30,7 +28,7 @@ export class BrowserRig {
       this.cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {})
       for (const fn of this.listeners) fn(this.frame)
     })
-    await this.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 72, maxWidth: 960, maxHeight: 540, everyNthFrame: 3 })
+    await this.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 72, maxWidth: 960, maxHeight: 540, everyNthFrame: 1 })
   }
 
   onFrame(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn) }

@@ -7,8 +7,13 @@ import { BrowserRig } from '../engine/rig.mjs'
 import { Reflex, decode } from '../engine/reflex.mjs'
 import { randomJob } from '../engine/jobs.mjs'
 
-const html = readFileSync(new URL('../standin/index.html', import.meta.url))
-const srv = createServer((q, r) => { r.setHeader('content-type', 'text/html'); r.end(html) }).listen(0)
+// serve standin/ (the page plus its vendored three.js)
+const DIR = new URL('../standin/', import.meta.url)
+const srv = createServer((q, r) => {
+  const p = q.url.split('?')[0].replace(/^\/+/, '') || 'index.html'
+  if (p.includes('..')) { r.statusCode = 400; return r.end() }
+  try { r.setHeader('content-type', p.endsWith('.js') ? 'text/javascript' : 'text/html'); r.end(readFileSync(new URL(p, DIR))) } catch { r.statusCode = 404; r.end() }
+}).listen(0)
 const port = srv.address().port
 const per = Number(process.argv[2] || 4)
 const seeds = [7, 19, 31]
