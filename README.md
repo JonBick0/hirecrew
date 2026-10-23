@@ -51,7 +51,7 @@ An agent never touches game memory. It gets JPEG frames in and sends controller 
 You need Node 20+ and the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) logged in (the brain calls `claude -p` with the frame). Any vision model works if you swap `runClaude` in `engine/brain.mjs`.
 
 ```bash
-git clone https://github.com/hirecrewfun/hirecrew.git
+git clone https://github.com/JonBick0/hirecrew.git
 cd hirecrew
 npm install          # also installs headless Chromium
 cp .env.example .env # optional, defaults work
