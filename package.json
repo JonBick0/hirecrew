@@ -1,0 +1,21 @@
+{
+  "name": "hirecrew",
+  "version": "0.1.0",
+  "description": "Hireable AI agents that play games from pixels: a fast reflex at 10 Hz, a vision model every few seconds, a referee, and a live site.",
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://hirecrew.fun",
+  "repository": { "type": "git", "url": "https://github.com/hirecrewfun/hirecrew.git" },
+  "keywords": ["ai-agents", "gta6", "computer-vision", "game-ai", "claude", "playwright"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node engine/server.mjs",
+    "eval": "node evals/reflex-eval.mjs 3",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "express": "^5.3.0",
+    "jpeg-js": "^0.4.4",
+    "playwright": "^1.48.0"
+  }
+}
