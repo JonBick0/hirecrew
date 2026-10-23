@@ -108,6 +108,7 @@ function target() { const j = world.job; return j && j.stops[j.step] }
 function startJob(job) {
   const stops = (job.stops || []).map(n => ({ name: n, tile: nearestRoad(PLACES[n] || [24, 24]) }))
   world.job = { id: job.id, kind: job.kind, title: job.title, stops, step: 0, t0: world.t, limit: job.limit || 150, done: false }
+  world.wanted = 0; cops = []   // every job starts clean, no chase carried over
   if (job.kind === 'escape') { world.wanted = Math.max(world.wanted, 2); world.lastSeen = world.t; spawnCops() }
   banner = { text: job.title, t: world.t }
   emit('job_start', { id: job.id })
@@ -126,8 +127,9 @@ const emit = (type, data) => { world.events.push({ type, t: +world.t.toFixed(2),
 let banner = { text: 'Stand-in city · waiting for a job', t: 0 }
 
 function spawnCops() {
+  if (!cops.length) world.chaseT0 = world.t   // a head start before an arrest can count
   while (cops.length < 2) {
-    const ang = rnd() * 6.28, d = 9 * T
+    const ang = rnd() * 6.28, d = 12 * T
     let x = car.x + Math.cos(ang) * d, y = car.y + Math.sin(ang) * d
     const tx = Math.min(N - 3, Math.max(2, Math.round(x / T))), ty = Math.min(N - 3, Math.max(2, Math.round(y / T)))
     const r = nearestRoad([tx, ty])
@@ -184,7 +186,16 @@ function step(dt) {
     const x = c.vert ? c.lane + (c.s > 0 ? 12 : -12) : c.p, y = c.vert ? c.p : c.lane + (c.s > 0 ? 12 : -12)
     c.x = x; c.y = y
     if (solid(Math.floor(x / T), Math.floor(y / T))) c.s *= -1
-    if (Math.hypot(x - car.x, y - car.y) < 34) { car.v *= -0.3; c.s *= -1; if (world.speed > 140) { world.crashes++; emit('crash', {}) } }
+    // bump once, push the player clear and let the traffic car ghost for a moment,
+    // otherwise both cars flip every frame and lock together
+    if (c.ghost > 0) { c.ghost -= dt; continue }
+    const d = Math.hypot(x - car.x, y - car.y)
+    if (d < 34) {
+      car.v *= -0.3; c.s *= -1; c.ghost = 2
+      const ux = (car.x - x) / (d || 1), uy = (car.y - y) / (d || 1), nx = x + ux * 35, ny = y + uy * 35
+      if (!solid(Math.floor(nx / T), Math.floor(ny / T))) { car.x = nx; car.y = ny }
+      if (world.speed > 140) { world.crashes++; emit('crash', {}) }
+    }
   }
   // police
   if (world.wanted > 0) {
@@ -194,7 +205,7 @@ function step(dt) {
       let da = ((want - k.a + Math.PI * 3) % (Math.PI * 2)) - Math.PI
       moveCar(k, 1, 0, Math.max(-1, Math.min(1, da * 2)), false, dt, 300 + world.wanted * 8)
       if (d < 7 * T) world.lastSeen = world.t
-      k.close = d < 60 && world.speed < 40 ? k.close + dt : Math.max(0, k.close - dt)
+      k.close = d < 60 && world.speed < 40 && world.t - (world.chaseT0 || 0) > 5 ? k.close + dt : Math.max(0, k.close - dt)
       if (k.close > 3) { emit('busted', {}); finishJob(false, 'busted'); world.wanted = 0; cops = []; world.cash = Math.max(0, world.cash - 100); break }
       if (d > 22 * T) { k.x = car.x - Math.cos(car.a) * 10 * T; k.y = car.y - Math.sin(car.a) * 10 * T }
     }

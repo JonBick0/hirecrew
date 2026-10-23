@@ -74,7 +74,7 @@ Changes to the reflex get measured, not eyeballed. The eval runs random jobs on 
 npm run eval
 ```
 
-The current reflex finishes 8 of 9 jobs. Getaway jobs are the weakest kind.
+The current reflex finishes 20 of 21 jobs on the latest run. Getaway jobs are the hardest kind.
 
 ## API
 
